@@ -921,6 +921,36 @@ void CLIntercept::writeReport(
 #endif
 }
 
+bool CLIntercept::isProfilingTimebaseTheSame(cl_command_queue queue)
+{
+    const auto timeBefore = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
+
+    cl_event ev;
+    cl_int errorCode = dispatch().clEnqueueMarker(queue, &ev);
+    if (errorCode != CL_SUCCESS)
+    {
+        return false;
+    }
+    errorCode = dispatch().clFinish(queue);
+    if (errorCode != CL_SUCCESS)
+    {
+        dispatch().clReleaseEvent(ev);
+        return false;
+    }
+
+    const auto timeAfter = std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now().time_since_epoch()).count();
+
+    size_t timeProfiling{};
+    errorCode = dispatch().clGetEventProfilingInfo(ev, CL_PROFILING_COMMAND_QUEUED, sizeof(timeProfiling), &timeProfiling, nullptr);
+    dispatch().clReleaseEvent(ev);
+    if (errorCode != CL_SUCCESS)
+    {
+        return false;
+    }
+
+    return timeBefore < timeProfiling && timeProfiling < timeAfter;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 //
 void CLIntercept::addShortKernelName(
@@ -12615,6 +12645,14 @@ void CLIntercept::chromeRegisterCommandQueue(
             NULL );
     }
 
+    if (errorCode == CL_SUCCESS)
+    {
+        bool sameTimebase = isProfilingTimebaseTheSame(queue);
+        if (sameTimebase) {
+            m_SameTimebaseQueues.insert(queue);
+        }
+    }
+
     if( errorCode == CL_SUCCESS )
     {
         unsigned int    queueNumber = m_QueueNumberMap[ queue ];
@@ -12727,8 +12765,17 @@ void CLIntercept::chromeTraceEvent(
     if( errorCode == CL_SUCCESS )
     {
         using ns = std::chrono::nanoseconds;
-        const uint64_t  normalizedQueuedTimeNS =
-            std::chrono::duration_cast<ns>(queuedTime - m_StartTime).count();
+        const cl_ulong  measuredQueuedTimeNS =
+            std::chrono::duration_cast<ns>(queuedTime.time_since_epoch()).count();
+
+        const bool adjusted = m_SameTimebaseQueues.find(queue) == m_SameTimebaseQueues.end();
+
+        const auto  startTimeNS =
+            std::chrono::duration_cast<ns>(m_StartTime.time_since_epoch()).count();
+        const auto  queuedTimeNS =
+            adjusted ?
+            measuredQueuedTimeNS - startTimeNS :
+            commandQueued - startTimeNS;
 
         const uint64_t  processId = OS().GetProcessID();
 
@@ -12746,9 +12793,9 @@ void CLIntercept::chromeTraceEvent(
                 "(Execution)"
             };
             const uint64_t  usStarts[cNumStates] = {
-                normalizedQueuedTimeNS / 1000,
-                (commandSubmit - commandQueued + normalizedQueuedTimeNS) / 1000,
-                (commandStart - commandQueued + normalizedQueuedTimeNS) / 1000
+                (queuedTimeNS) / 1000,
+                (commandSubmit - commandQueued + queuedTimeNS) / 1000,
+                (commandStart - commandQueued + queuedTimeNS) / 1000
             };
             const uint64_t  usDeltas[cNumStates] = {
                 (commandSubmit - commandQueued) / 1000,
@@ -12768,6 +12815,7 @@ void CLIntercept::chromeTraceEvent(
                         << ", \"dur\":" << usDeltas[state]
                         << ", \"cname\":\"" << colours[state]
                         << "\", \"args\":{\"id\":" << enqueueCounter
+                        << ", \"adjusted\":" << adjusted
                         << "}},\n";
                 }
                 else
@@ -12780,6 +12828,7 @@ void CLIntercept::chromeTraceEvent(
                         << ", \"dur\":" << usDeltas[state]
                         << ", \"cname\":\"" << colours[state]
                         << "\", \"args\":{\"id\":" << enqueueCounter
+                        << ", \"adjusted\":" << adjusted
                         << "}},\n";
                 }
             }
@@ -12788,8 +12837,8 @@ void CLIntercept::chromeTraceEvent(
         else
         {
             const uint64_t  usStart =
-                (commandStart - commandQueued + normalizedQueuedTimeNS) / 1000;
-            const uint64_t  usDelta = ( commandEnd - commandStart ) / 1000;
+                (commandStart - commandQueued + queuedTimeNS) / 1000;
+            const uint64_t  usDelta = (commandEnd - commandStart) / 1000;
             if( m_Config.ChromePerformanceTimingPerKernel )
             {
                 m_InterceptTrace
@@ -12799,6 +12848,7 @@ void CLIntercept::chromeTraceEvent(
                     << "\", \"ts\":" << usStart
                     << ", \"dur\":" << usDelta
                     << ", \"args\":{\"id\":" << enqueueCounter
+                    << ", \"adjusted\":" << adjusted
                     << "}},\n";
             }
             else
@@ -12810,6 +12860,7 @@ void CLIntercept::chromeTraceEvent(
                     << "\", \"ts\":" << usStart
                     << ", \"dur\":" << usDelta
                     << ", \"args\":{\"id\":" << enqueueCounter
+                    << ", \"adjusted\":" << adjusted
                     << "}},\n";
             }
         }

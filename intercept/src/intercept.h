@@ -893,6 +893,8 @@ private:
     void    writeReport(
                 std::ostream& os );
 
+    bool isProfilingTimebaseTheSame(cl_command_queue queue);
+
     std::mutex      m_Mutex;
 
     typedef std::map< cl_platform_id, CLdispatchX > CLdispatchXMap;
@@ -1066,6 +1068,9 @@ private:
 
     typedef std::map< cl_command_queue, unsigned int >  CQueueNumberMap;
     CQueueNumberMap m_QueueNumberMap;
+
+    typedef std::set< cl_command_queue >  CSameTimebaseQueues;
+    CSameTimebaseQueues m_SameTimebaseQueues;
 
     typedef std::list< cl_command_queue >   CQueueList;
     typedef std::map< cl_context, CQueueList >  CContextQueuesMap;
